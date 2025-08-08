@@ -170,7 +170,7 @@
     };
 
     els.pageTitle.textContent = CONFIG.pageTitle;
-    els.subtitle.textContent = `Live from Google Sheets • ${CONFIG.sheetName}`;
+    els.subtitle.textContent = CONFIG.pubId ? `Live from Google Sheets • gid ${CONFIG.gid}` : `Live from Google Sheets • ${CONFIG.sheetName}`;
 
     function csvUrl(sheetId, sheetName) {
       // If a Publish-to-web ID is supplied (starts with 2PACX-), use the CSV publish endpoint.
@@ -185,6 +185,58 @@
       return `${base}?${query}`;
     }
 
+    // --- Robust loader for PapaParse with fallbacks ---
+    function loadScript(url) {
+      return new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = url; s.async = true; s.onload = resolve; s.onerror = reject; document.head.appendChild(s);
+      });
+    }
+    function basicCSVParse(csv, { header = true } = {}) {
+      // Minimal CSV parser (handles quotes and commas) as a fallback if Papa is unavailable
+      const lines = csv.replace(/
+/g, '
+').replace(/
+/g, '
+').split('
+').filter(Boolean);
+      const parseLine = (line) => {
+        const out = []; let cur = ''; let inQ = false;
+        for (let i = 0; i < line.length; i++) {
+          const ch = line[i];
+          if (ch === '"') {
+            if (inQ && line[i+1] === '"') { cur += '"'; i++; }
+            else { inQ = !inQ; }
+          } else if (ch === ',' && !inQ) { out.push(cur); cur = ''; }
+          else { cur += ch; }
+        }
+        out.push(cur);
+        return out;
+      };
+      const [first, ...rest] = lines;
+      const headers = header ? parseLine(first).map(h => h.trim()) : [];
+      const dataLines = header ? rest : lines;
+      const data = dataLines.map(l => {
+        const cells = parseLine(l);
+        if (!header) return cells;
+        const obj = {}; headers.forEach((h, i) => obj[h] = cells[i]);
+        return obj;
+      });
+      return { data, errors: [] };
+    }
+    async function ensurePapa() {
+      if (window.Papa) return window.Papa;
+      try { await loadScript('https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js'); } catch (_) {}
+      if (!window.Papa) {
+        try { await loadScript('https://unpkg.com/papaparse@5.4.1/papaparse.min.js'); } catch (_) {}
+      }
+      if (!window.Papa) {
+        // Final fallback: use basicCSVParse shim
+        window.Papa = { parse: (csv, opts) => basicCSVParse(csv, opts) };
+      }
+      return window.Papa;
+    }
+
     async function fetchRows() {
       const url = csvUrl(CONFIG.sheetId, CONFIG.sheetName);
       els.sourceLabel.textContent = `Source: ${CONFIG.sheetName}`;
@@ -192,7 +244,8 @@
       const res = await fetch(url, { cache: 'no-store' });
       if (!res.ok) throw new Error(`Fetch failed (${res.status})`);
       const csv = await res.text();
-      const parsed = Papa.parse(csv, { header: true, dynamicTyping: true, skipEmptyLines: true });
+      const PapaLib = await ensurePapa();
+      const parsed = PapaLib.parse(csv, { header: true, dynamicTyping: true, skipEmptyLines: true });
       if (parsed.errors?.length) console.warn('CSV parse warnings:', parsed.errors.slice(0,3));
       // Normalize keys by trimming & removing BOMs/spaces
       const rows = parsed.data.map(row => {
