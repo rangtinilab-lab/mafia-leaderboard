@@ -128,169 +128,147 @@
   </div>
 
   <script>
-// Minimal, robust leaderboard script (no search UI)
-const params = new URLSearchParams(location.search);
-const CONFIG = {
-  sheetId: params.get('sheetId') || 'YOUR_SHEET_ID_HERE',
-  pubId: params.get('pubId') || '', // Publish-to-web ID (starts with 2PACX-)
-  gid: params.get('gid') || '0',    // Tab gid when using pubId
-  sheetName: params.get('sheet') || 'Sheet1',
-  nameKey: params.get('name') || 'Name',
-  scoreKey: params.get('score') || 'Points',
-  descending: (params.get('order') || 'desc').toLowerCase() !== 'asc',
-  refreshSeconds: +params.get('refresh') || 60,
-  pageTitle: params.get('title') || 'Leaderboard',
-};
+// Minimal, dependency-free leaderboard (Rank • Name • Score)
+(function(){
+  const params = new URLSearchParams(location.search);
+  const CONFIG = {
+    sheetId: params.get('sheetId') || '',
+    pubId: params.get('pubId') || '',   // 2PACX-...
+    gid: params.get('gid') || '0',
+    sheetName: params.get('sheet') || 'Sheet1',
+    nameKey: params.get('name') || 'Name',
+    scoreKey: params.get('score') || 'Points',
+    descending: (params.get('order') || 'desc').toLowerCase() !== 'asc',
+    refreshSeconds: +params.get('refresh') || 60,
+    pageTitle: params.get('title') || 'Leaderboard',
+  };
 
-const els = {
-  lastUpdated: document.getElementById('lastUpdated'),
-  sourceLabel: document.getElementById('sourceLabel'),
-  theadRow: document.getElementById('theadRow'),
-  tbody: document.getElementById('tbody'),
-  pageTitle: document.getElementById('pageTitle'),
-  subtitle: document.getElementById('subtitle'),
-};
+  const els = {
+    lastUpdated: document.getElementById('lastUpdated'),
+    sourceLabel: document.getElementById('sourceLabel'),
+    theadRow: document.getElementById('theadRow'),
+    tbody: document.getElementById('tbody'),
+    pageTitle: document.getElementById('pageTitle'),
+    subtitle: document.getElementById('subtitle'),
+  };
+  els.pageTitle.textContent = CONFIG.pageTitle;
+  els.subtitle.textContent = CONFIG.pubId ? `Live from Google Sheets • gid ${CONFIG.gid}` : `Live from Google Sheets • ${CONFIG.sheetName}`;
 
-els.pageTitle.textContent = CONFIG.pageTitle;
-els.subtitle.textContent = CONFIG.pubId ? `Live from Google Sheets • gid ${CONFIG.gid}` : `Live from Google Sheets • ${CONFIG.sheetName}`;
-
-function csvUrl(sheetId, sheetName) {
-  if (CONFIG.pubId) {
-    const base = `https://docs.google.com/spreadsheets/d/e/${CONFIG.pubId}/pub`;
-    const query = new URLSearchParams({ gid: CONFIG.gid, single: 'true', output: 'csv', cachebust: Date.now() });
-    return `${base}?${query}`;
+  function csvUrl(sheetId, sheetName){
+    if (CONFIG.pubId){
+      const base = `https://docs.google.com/spreadsheets/d/e/${CONFIG.pubId}/pub`;
+      const q = new URLSearchParams({ gid: CONFIG.gid, single: 'true', output: 'csv', cachebust: Date.now() });
+      return `${base}?${q}`;
+    }
+    const base = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq`;
+    const q = new URLSearchParams({ tqx: 'out:csv', sheet: sheetName, cachebust: Date.now() });
+    return `${base}?${q}`;
   }
-  const base = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq`;
-  const query = new URLSearchParams({ tqx: 'out:csv', sheet: sheetName, cachebust: Date.now() });
-  return `${base}?${query}`;
-}
 
-// --- PapaParse loader with fallback shim ---
-function loadScript(url) {
-  return new Promise((resolve, reject) => {
-    const s = document.createElement('script'); s.src = url; s.async = true;
-    s.onload = resolve; s.onerror = reject; document.head.appendChild(s);
-  });
-}
-function basicCSVParse(csv, { header = true } = {}) {
-  const lines = csv.replace(/
+  // Tiny CSV parser that handles quotes and commas
+  function parseCSV(csv){
+    const lines = csv.replace(/
 /g, '
 ').replace(/
 /g, '
 ').split('
-').filter(l => l.length);
-  const parseLine = (line) => {
-    const out = []; let cur = ''; let inQ = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (ch === '"') {
-        if (inQ && line[i+1] === '"') { cur += '"'; i++; }
-        else { inQ = !inQ; }
-      } else if (ch === ',' && !inQ) { out.push(cur); cur = ''; }
-      else { cur += ch; }
+').filter(l => l.length > 0);
+    const parseLine = (line)=>{
+      const out = []; let cur = ''; let inQ = false;
+      for (let i=0;i<line.length;i++){
+        const ch = line[i];
+        if (ch === '"'){
+          if (inQ && line[i+1] === '"'){ cur += '"'; i++; }
+          else { inQ = !inQ; }
+        } else if (ch === ',' && !inQ){ out.push(cur); cur = ''; }
+        else { cur += ch; }
+      }
+      out.push(cur);
+      return out;
+    };
+    const headers = parseLine(lines[0]).map(h => h.replace(/﻿/g,'').trim());
+    const rows = lines.slice(1).map(l => {
+      const cells = parseLine(l);
+      const obj = {}; headers.forEach((h, i) => obj[h] = cells[i]);
+      return obj;
+    });
+    return { headers, rows };
+  }
+
+  async function fetchRows(){
+    const url = csvUrl(CONFIG.sheetId, CONFIG.sheetName);
+    els.sourceLabel.textContent = CONFIG.pubId ? `Source: gid ${CONFIG.gid}` : `Source: ${CONFIG.sheetName}`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`Fetch failed (${res.status})`);
+    const csv = await res.text();
+    const { headers, rows } = parseCSV(csv);
+    // normalize keys
+    const normalized = rows.map(r => {
+      const o = {}; Object.keys(r).forEach(k => { if (k) o[String(k).trim()] = r[k]; });
+      return o;
+    });
+    return { headers, rows: normalized };
+  }
+
+  function detectColumns(headers){
+    let nameKey = headers.includes(CONFIG.nameKey) ? CONFIG.nameKey : (headers.find(h => h.toLowerCase().includes('name')) || headers[0]);
+    let scoreKey = headers.includes(CONFIG.scoreKey) ? CONFIG.scoreKey : (headers.find(h => /point|score|total/i.test(h)) || headers[1] || headers[0]);
+    return { nameKey, scoreKey };
+  }
+
+  function rankRows(rows, scoreKey){
+    for (const r of rows){
+      const v = r[scoreKey];
+      if (typeof v === 'string') r[scoreKey] = Number(v.replace(/,/g,'').trim() || 0);
     }
-    out.push(cur);
-    return out;
-  };
-  const [first, ...rest] = lines;
-  const headers = header ? parseLine(first).map(h => h.trim()) : [];
-  const dataLines = header ? rest : lines;
-  const data = dataLines.map(l => {
-    const cells = parseLine(l);
-    if (!header) return cells;
-    const obj = {}; headers.forEach((h, i) => obj[h] = cells[i]);
-    return obj;
-  });
-  return { data, errors: [] };
-}
-async function ensurePapa() {
-  if (window.Papa) return window.Papa;
-  try { await loadScript('https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js'); } catch (_) {}
-  if (!window.Papa) { try { await loadScript('https://unpkg.com/papaparse@5.4.1/papaparse.min.js'); } catch (_) {} }
-  if (!window.Papa) { window.Papa = { parse: (csv, opts) => basicCSVParse(csv, opts) }; }
-  return window.Papa;
-}
-
-async function fetchRows() {
-  const url = csvUrl(CONFIG.sheetId, CONFIG.sheetName);
-  els.sourceLabel.textContent = CONFIG.pubId ? `Source: gid ${CONFIG.gid}` : `Source: ${CONFIG.sheetName}`;
-  const res = await fetch(url, { cache: 'no-store' });
-  if (!res.ok) throw new Error(`Fetch failed (${res.status})`);
-  const csv = await res.text();
-  const PapaLib = await ensurePapa();
-  const parsed = PapaLib.parse(csv, { header: true, dynamicTyping: true, skipEmptyLines: true });
-  if (parsed.errors?.length) console.warn('CSV parse warnings:', parsed.errors.slice(0,3));
-  const rows = parsed.data.map(row => {
-    const clean = {}; for (const [k, v] of Object.entries(row)) {
-      if (!k) continue; const nk = String(k).replace(/﻿/g, '').trim(); clean[nk] = v; }
-    return clean; });
-  return rows;
-}
-
-function detectColumns(rows) {
-  if (!rows.length) return null;
-  const headers = Object.keys(rows[0]);
-  let nameKey = headers.includes(CONFIG.nameKey) ? CONFIG.nameKey : (headers.find(h => h.toLowerCase().includes('name')) || headers[0]);
-  let scoreKey = headers.includes(CONFIG.scoreKey) ? CONFIG.scoreKey : (headers.find(h => /point|score|total|value/i.test(h)) || headers[1] || headers[0]);
-  return { headers, nameKey, scoreKey };
-}
-
-function rankRows(rows, scoreKey) {
-  for (const r of rows) {
-    const val = r[scoreKey];
-    if (typeof val === 'string') r[scoreKey] = Number(val.toString().replace(/,/g, ''));
+    rows.sort((a,b)=>{
+      const av = Number(a[scoreKey] ?? 0), bv = Number(b[scoreKey] ?? 0);
+      return CONFIG.descending ? (bv - av) : (av - bv);
+    });
+    let lastScore = null, lastRank = 0, i = 0;
+    for (const r of rows){
+      i++; const s = Number(r[scoreKey] ?? 0);
+      if (s === lastScore){ r.__rank = lastRank; }
+      else { r.__rank = i; lastRank = i; lastScore = s; }
+    }
+    return rows;
   }
-  rows.sort((a,b) => {
-    const av = Number(a[scoreKey] ?? 0); const bv = Number(b[scoreKey] ?? 0);
-    return CONFIG.descending ? (bv - av) : (av - bv);
-  });
-  let lastScore = null, lastRank = 0, i = 0;
-  for (const r of rows) {
-    i++; const score = Number(r[scoreKey] ?? 0);
-    if (score === lastScore) { r.__rank = lastRank; } else { r.__rank = i; lastRank = i; lastScore = score; }
+
+  function medalFor(rank){ return rank===1?'🥇':rank===2?'🥈':rank===3?'🥉':''; }
+
+  function renderTable(rows, cols){
+    const { nameKey, scoreKey } = cols;
+    els.theadRow.innerHTML = '';
+    const thRank = document.createElement('th'); thRank.textContent = 'Rank'; thRank.className = 'rank'; els.theadRow.appendChild(thRank);
+    const thName = document.createElement('th'); thName.textContent = nameKey; thName.className = 'name'; els.theadRow.appendChild(thName);
+    const thScore = document.createElement('th'); thScore.textContent = scoreKey; els.theadRow.appendChild(thScore);
+
+    els.tbody.innerHTML = '';
+    for (const r of rows){
+      const tr = document.createElement('tr');
+      const tdRank = document.createElement('td'); tdRank.className = 'rank'; tdRank.innerHTML = `<span class="medal">${medalFor(r.__rank)}</span><span>#${r.__rank}</span>`; tr.appendChild(tdRank);
+      const tdName = document.createElement('td'); tdName.className = 'name'; tdName.textContent = r[nameKey] ?? ''; tr.appendChild(tdName);
+      const tdScore = document.createElement('td'); tdScore.textContent = r[scoreKey] ?? 0; tr.appendChild(tdScore);
+      els.tbody.appendChild(tr);
+    }
   }
-  return rows;
-}
 
-function medalFor(rank) { return rank===1?'🥇':rank===2?'🥈':rank===3?'🥉':''; }
-
-function renderTable(rows, columns) {
-  const { nameKey, scoreKey } = columns;
-  els.theadRow.innerHTML = '';
-  const thRank = document.createElement('th'); thRank.textContent = 'Rank'; thRank.className = 'rank'; els.theadRow.appendChild(thRank);
-  const thName = document.createElement('th'); thName.textContent = nameKey; thName.className = 'name'; els.theadRow.appendChild(thName);
-  const thScore = document.createElement('th'); thScore.textContent = scoreKey; els.theadRow.appendChild(thScore);
-  els.tbody.innerHTML = '';
-  for (const r of rows) {
-    const tr = document.createElement('tr');
-    const tdRank = document.createElement('td'); tdRank.className = 'rank'; tdRank.innerHTML = `<span class="medal">${medalFor(r.__rank)}</span><span>#${r.__rank}</span>`; tr.appendChild(tdRank);
-    const tdName = document.createElement('td'); tdName.className = 'name'; tdName.textContent = r[nameKey] ?? ''; tr.appendChild(tdName);
-    const tdScore = document.createElement('td'); tdScore.textContent = r[scoreKey] ?? 0; tr.appendChild(tdScore);
-    els.tbody.appendChild(tr);
+  async function refresh(){
+    try {
+      const { headers, rows } = await fetchRows();
+      const cols = detectColumns(headers);
+      const ranked = rankRows([...rows], cols.scoreKey);
+      renderTable(ranked, cols);
+      els.lastUpdated.textContent = `${new Date().toLocaleString()} • ${ranked.length} rows`;
+    } catch (err){
+      console.error(err);
+      els.lastUpdated.textContent = `Error: ${err.message}`;
+    }
   }
-}
 
-let state = { rows: [], columns: null };
-async function refresh() {
-  try {
-    document.body.style.cursor = 'progress';
-    const rows = await fetchRows();
-    const columns = detectColumns(rows);
-    if (!columns) throw new Error('No rows found');
-    const ranked = rankRows([...rows], columns.scoreKey);
-    state = { rows: ranked, columns };
-    renderTable(ranked, columns);
-    els.lastUpdated.textContent = new Date().toLocaleString();
-  } catch (err) {
-    console.error(err);
-    els.lastUpdated.textContent = `Error: ${err.message}`;
-  } finally {
-    document.body.style.cursor = 'default';
-  }
-}
-
-refresh();
-if (CONFIG.refreshSeconds > 0) setInterval(refresh, CONFIG.refreshSeconds * 1000);
+  refresh();
+  if (CONFIG.refreshSeconds > 0) setInterval(refresh, CONFIG.refreshSeconds * 1000);
+})();
 </script>
 </body>
 </html>
