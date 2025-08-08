@@ -113,17 +113,6 @@
     </header>
 
     <div class="card">
-      <div class="controls">
-        <div class="left">
-          <input id="search" type="search" placeholder="Search name or team…" />
-          <select id="sortBy"></select>
-          <button id="refreshBtn" class="ghost" title="Refresh now">↻ Refresh</button>
-        </div>
-        <div class="right">
-          <span class="pill" id="rowsCount">0 rows</span>
-        </div>
-      </div>
-
       <div class="tableWrap">
         <table id="table">
           <thead><tr id="theadRow"></tr></thead>
@@ -158,15 +147,11 @@
     const els = {
       lastUpdated: document.getElementById('lastUpdated'),
       sourceLabel: document.getElementById('sourceLabel'),
-      rowsCount: document.getElementById('rowsCount'),
-      search: document.getElementById('search'),
-      sortBy: document.getElementById('sortBy'),
       table: document.getElementById('table'),
       theadRow: document.getElementById('theadRow'),
       tbody: document.getElementById('tbody'),
       pageTitle: document.getElementById('pageTitle'),
       subtitle: document.getElementById('subtitle'),
-      refreshBtn: document.getElementById('refreshBtn'),
     };
 
     els.pageTitle.textContent = CONFIG.pageTitle;
@@ -239,7 +224,7 @@
 
     async function fetchRows() {
       const url = csvUrl(CONFIG.sheetId, CONFIG.sheetName);
-      els.sourceLabel.textContent = `Source: ${CONFIG.sheetName}`;
+      els.sourceLabel.textContent = CONFIG.pubId ? `Source: gid ${CONFIG.gid}` : `Source: ${CONFIG.sheetName}`;
 
       const res = await fetch(url, { cache: 'no-store' });
       if (!res.ok) throw new Error(`Fetch failed (${res.status})`);
@@ -299,12 +284,7 @@
       return rows;
     }
 
-    function buildSortOptions(headers, preferred) {
-      els.sortBy.innerHTML = '';
-      const opts = [preferred].concat(headers.filter(h => h !== preferred));
-      for (const h of opts) {
-        const o = document.createElement('option');
-        o.value = h; o.textContent = `Sort by ${h}`; els.sortBy.appendChild(o);
+    function buildSortOptions() { /* simple leaderboard mode: no sort UI */ }`; els.sortBy.appendChild(o);
       }
       els.sortBy.value = preferred;
     }
@@ -317,25 +297,30 @@
     }
 
     function renderTable(rows, columns) {
-      const { nameKey, scoreKey, teamKey, extra } = columns;
-      // Build header
+      const { nameKey, scoreKey } = columns;
+      // Build header (Rank, Name, Score only)
       els.theadRow.innerHTML = '';
       const thRank = document.createElement('th'); thRank.textContent = 'Rank'; thRank.className = 'rank';
       els.theadRow.appendChild(thRank);
       const thName = document.createElement('th'); thName.textContent = nameKey; thName.className = 'name';
       els.theadRow.appendChild(thName);
-      if (teamKey) { const thTeam = document.createElement('th'); thTeam.textContent = teamKey; thTeam.className = 'optional'; els.theadRow.appendChild(thTeam); }
-      for (const col of extra) { const th = document.createElement('th'); th.textContent = col; th.className = 'optional'; els.theadRow.appendChild(th); }
       const thScore = document.createElement('th'); thScore.textContent = scoreKey; els.theadRow.appendChild(thScore);
 
-      // Body
+      // Body – all rows, no search filter
       els.tbody.innerHTML = '';
-      const q = (els.search.value || '').toLowerCase().trim();
-      const filtered = rows.filter(r => {
-        if (!q) return true;
-        const hay = [r[nameKey], r[teamKey], ...extra.map(k => r[k])].filter(Boolean).join(' ').toLowerCase();
-        return hay.includes(q);
-      });
+      for (const r of rows) {
+        const tr = document.createElement('tr');
+        const tdRank = document.createElement('td'); tdRank.className = 'rank';
+        tdRank.innerHTML = `<span class="medal">${medalFor(r.__rank)}</span><span>#${r.__rank}</span>`;
+        tr.appendChild(tdRank);
+
+        const tdName = document.createElement('td'); tdName.className = 'name'; tdName.textContent = r[nameKey] ?? '';
+        tr.appendChild(tdName);
+
+        const tdScore = document.createElement('td'); tdScore.textContent = r[scoreKey] ?? 0; tr.appendChild(tdScore);
+        els.tbody.appendChild(tr);
+      }
+    });
 
       for (const r of filtered) {
         const tr = document.createElement('tr');
@@ -365,8 +350,19 @@
         const columns = detectColumns(rows);
         if (!columns) throw new Error('No rows found');
 
-        // If user changed sort column via UI, persist it, else default to scoreKey
-        if (!state.columns) { buildSortOptions(columns.headers, columns.scoreKey); }
+        // Always sort by the score column (descending by default)
+        const ranked = rankRows([...rows], columns.scoreKey);
+        state = { rows: ranked, columns };
+        renderTable(ranked, columns);
+
+        els.lastUpdated.textContent = new Date().toLocaleString();
+      } catch (err) {
+        console.error(err);
+        els.lastUpdated.textContent = `Error: ${err.message}`;
+      } finally {
+        document.body.style.cursor = 'default';
+      }
+    }
         const sortKey = els.sortBy.value || columns.scoreKey;
 
         const ranked = rankRows([...rows], sortKey);
@@ -382,15 +378,7 @@
       }
     }
 
-    // Events
-    els.search.addEventListener('input', () => state.rows.length && renderTable(state.rows, state.columns));
-    els.sortBy.addEventListener('change', () => {
-      if (!state.rows.length) return;
-      state.rows = rankRows(state.rows, els.sortBy.value);
-      state.columns.scoreKey = els.sortBy.value;
-      renderTable(state.rows, state.columns);
-    });
-    document.getElementById('refreshBtn').addEventListener('click', refresh);
+    // Events — none (simple leaderboard mode)
 
     // Auto refresh
     refresh();
